@@ -12,7 +12,154 @@
 
 
 
-int __parse_cfg_file(const char *cfg_file, struct cfg_line *cfg, int level, int optional, int strict)
+static int	match_glob(const char *file, const char *pattern)
+{
+	const char	*f, *g, *p, *q;
+
+	f = file;
+	p = pattern;
+
+	while (1)
+	{
+		/* corner case */
+
+		if ('\0' == *p)
+			return '\0' == *f ? SUCCEED : FAIL;
+
+		/* find a set of literal characters */
+
+		while ('*' == *p)
+			p++;
+
+		for (q = p; '\0' != *q && '*' != *q; q++)
+			;
+
+		/* if literal characters are at the beginning... */
+
+		if (pattern == p)
+		{
+			if (0 != strncmp(f, p, q - p))
+				return FAIL;
+
+			f += q - p;
+			p = q;
+
+			continue;
+		}
+
+		/* if literal characters are at the end... */
+
+		if ('\0' == *q)
+		{
+			for (g = f; '\0' != *g; g++)
+				;
+
+			if (g - f < q - p)
+				return FAIL;
+			return 0 == strcmp(g - (q - p), p) ? SUCCEED : FAIL;
+		}
+
+		/* if literal characters are in the middle... */
+
+		while (1)
+		{
+			if ('\0' == *f)
+				return FAIL;
+			if (0 == strncmp(f, p, q - p))
+			{
+				f += q - p;
+				p = q;
+
+				break;
+			}
+
+			f++;
+		}
+	}
+}
+
+
+
+static int	parse_cfg_dir(const char *path, const char *pattern, struct cfg_line *cfg, int level, int strict)
+{
+	DIR		*dir;
+	struct dirent	*d;
+	struct stat	sb;
+	char		*file = NULL;
+	int		ret = FAIL;
+
+	if (NULL == (dir = opendir(path)))
+	{
+		lxl_err(lxl_strdup("%s: %s", path, strerror(errno)));
+		goto out;
+	}
+
+	while (NULL != (d = readdir(dir)))
+	{
+		file = lxl_dsprintf(file, "%s/%s", path, d->d_name);
+
+		if (0 != stat(file, &sb) || 0 == S_ISREG(sb.st_mode))
+			continue;
+
+		if (NULL != pattern && SUCCEED != match_glob(d->d_name, pattern))
+			continue;
+
+		if (SUCCEED != __parse_cfg_file(file, cfg, level, LXL_CFG_FILE_REQUIRED, strict))
+			goto close;
+	}
+
+	ret = SUCCEED;
+close:
+	if (0 != closedir(dir))
+	{
+		lxl_err(lxl_strdup("%s: %s", path, strerror(errno)));
+		ret = FAIL;
+	}
+
+	lxl_free(file);
+out:
+	return ret;
+}
+
+
+
+static int	parse_cfg_object(const char *cfg_file, struct cfg_line *cfg, int level, int strict)
+{
+	int		ret = FAIL;
+	char		*path = NULL, *pattern = NULL;
+	struct stat	sb;
+
+	if (SUCCEED != parse_glob(cfg_file, &path, &pattern))
+		goto clean;
+
+	if (0 != stat(path, &sb))
+	{
+		lxl_err(lxl_strdup("%s: %s", path, strerror(errno)));
+		goto clean;
+	}
+
+	if (0 == S_ISDIR(sb.st_mode))
+	{
+		if (NULL == pattern)
+		{
+			ret = __parse_cfg_file(path, cfg, level, LXL_CFG_FILE_REQUIRED, strict);
+			goto clean;
+		}
+
+		lxl_err(lxl_strdup("%s: base path is not a directory", cfg_file));
+		goto clean;
+	}
+
+	ret = parse_cfg_dir(path, pattern, cfg, level, strict);
+clean:
+	lxl_free(pattern);
+	lxl_free(path);
+
+	return ret;
+}
+
+
+static int __parse_cfg_file(const char *cfg_file, struct cfg_line *cfg, int level, int optional, int strict)
 {
     FILE    *file = NULL;
     int lineno,param_valid, index;
@@ -65,7 +212,7 @@ int __parse_cfg_file(const char *cfg_file, struct cfg_line *cfg, int level, int 
 
             parameter = line;
             if(NULL == (value = strchr(line, '=')))
-                goto no_key_value;
+                goto non_key_value;
 
             *value++ = '\0';
 
@@ -98,7 +245,7 @@ int __parse_cfg_file(const char *cfg_file, struct cfg_line *cfg, int level, int 
                 param_valid = 1;
                 lxl_log(lxl_strdup("accepted configuration parameter: '%s' = '%s'",parameter, value));
 
-                switch (cfg[i].tyoe)
+                switch (cfg[i].type)
                 {
                     case TYPE_INT:
                         if( FAIL == str2uint64(value, "KMGT", &var) )
@@ -132,10 +279,78 @@ int __parse_cfg_file(const char *cfg_file, struct cfg_line *cfg, int level, int 
             }
             if(0 == param_valid && LXL_CFG_STRICT == strict)
                 goto unknown_parameter;
+        }
 
-            flcose(file);
+        flcose(file);
     }
+    if(1 != level)
+        return SUCCEED;
 
+    for(i = 0; NULL != cfg[i].parameter; i++)
+    {
+        if(PARM_MAND != cfg[i].mandatory)
+            continue;
+
+        switch (cfg[i].type)
+        {
+            case TYPE_INT:
+                if(0 == *((int *)cfg[i].variable))
+                    goto missing_mandatory;
+                break;
+            case TYPE_STRING:
+            case TYPE_STRING_LIST:
+                if(NULL == (*(char **)cfg[i].variable))
+                    goto missing_mandatory;
+                break;
+            default:
+                assert(0);
+        }
+    }
+    return SUCCEED;
+
+
+
+cannot_open:
+    if( 0 != optional )
+        return SUCCEED;
+    lxl_err(lxl_strdup("cannot open config file [%s]:[%s]\n", cfg_file, strerror(errno)));
+    goto error;
+line_too_long:
+    fclose(file);
+
+    lxl_err(lxl_strdup("line %d exceeds %d byte length limit int config file [%s]\n", lineno, MAX_STRING_LEN, cfg_file));
+    goto error;
+
+no_utf8:
+
+    fclose(file);
+    lxl_err(lxl_strdup("no-UTF-8 character at line %d \"%s\" in config file [%s]\n", lineno, line, cfg_file));
+    goto error;
+
+non_key_value:
+
+    fclose(file);
+    lxl_err(lxl_strdup("invalid entry \"%s\" (not following \"parameter=value\" notation) in config file [%s], line %d\n", line, cfg_file, lineno));
+    goto error;
+
+incorrect_config:
+    fclose(file);
+    lxl_err(lxl_strdup("wrong value of \"%s\" in config file [%s],line %d\n", cfg[i].parameter, cfg_file, lineno));
+
+    goto error;
+
+unknown_parameter:
+    fclose(file);
+
+    lxl_err(lxl_strdup("unknown parameter \"%s\" in config file [%s], line %d\n", parameter, cfg_file, lineno));
+
+    goto error;
+
+missing_mandatory:
+    lxl_err(lxl_strdup("missing mandatory parameter \"%s\" in config file [%s]\n", cfg[i].parameter, cfg_file));
+
+error:
+    exit(EXIT_FAILURE);
 
 
 }
