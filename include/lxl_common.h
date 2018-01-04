@@ -32,4 +32,19 @@
 #endif
 
 
+#define lxl_free(ptr)       \
+                            \
+do                          \
+{                           \
+    /* code */              \
+    if (ptr)                \
+    {                       \
+        free(ptr);          \
+        ptr = NULL;         \
+    }                       \
+} while (0);                
+
+
+
+
 #endif

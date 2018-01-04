@@ -113,12 +113,29 @@ int __parse_cfg_file(const char *cfg_file, struct cfg_line *cfg, int level, int 
 
                         trim_str_list(value, ',');
                     case TYPE_STRING:
-                        *((char **)cfg[i].variable) = 
+                        *((char **)cfg[i].variable) = lxl_strdup2(*((char **)cfg[i].variable), value); 
+                        break;
+                    case TYPE_MULTISTRING:
+                        lxl_strarr_add(cfg[i].variable, value);
+                        break;
+                    case TYPE_UINT64:
+                        if(FAIL == str2uint64(value , "KMGT", &var))
+                            goto incorrect_config;
+
+                        if(cfg[i].min > var || (var > cfg[i].max && 0 != cfg[i].max))
+                            goto incorrect_config;
+                        *((uint64_t *)cfg[i].variable) = var;
+                        break;
+                    default:
+                        assert(0);
                 }
             }
+            if(0 == param_valid && LXL_CFG_STRICT == strict)
+                goto unknown_parameter;
 
-        }
+            flcose(file);
     }
+
 
 
 }
