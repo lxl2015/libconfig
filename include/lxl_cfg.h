@@ -12,7 +12,7 @@ struct cfg_line
     char        *parameter;
     void        *variable;
     int         type;
-    int         tmandatory;
+    int         mandatory;
     uint64_t    min;
     uint64_t    max;
 };

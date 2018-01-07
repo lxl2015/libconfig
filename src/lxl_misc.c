@@ -10,11 +10,11 @@
 #define _DEBUG_
 
 /**
- * @Function  lxl_strdup 
+ * @Function  lxl_strdup 		strdup的二次封装，调用后，好释放内存
  *
  * @Param     fmt
  * @Param     ...
- * strdup的二次封装，调用后，好释放内存
+ * 
  * @Returns   
  */
 char *lxl_strdup(const char *fmt, ...)
@@ -31,16 +31,15 @@ char *lxl_strdup(const char *fmt, ...)
 #else
     return NULL;
 #endif
-
 }
 
 
 /**
- * @Function  lxl_strdup2 
+ * @Function  lxl_strdup2 	变量替换
  *
  * @Param     old
  * @Param     str
- * 变量替换
+ * 
  * @Returns   
  */
 char *lxl_strdup2(char *old, char *str)
@@ -62,10 +61,10 @@ char *lxl_strdup2(char *old, char *str)
 
 
 /**
- * @Function  lxl_log 
+ * @Function  lxl_log 		输出日志信息
  *  
  * @Param     out
- * 输出日志信息
+ * 
  */
 void lxl_log(char *out)
 {
@@ -84,13 +83,63 @@ void lxl_log(char *out)
 #endif
 }
 
+char *lxl_dvsprintf(char *dest, const char *f, va_list args)
+{
+    char    *string = NULL;
+    int n, size = MAX_STRING_LEN >> 1;
+
+    va_list curr;
+
+    while (1)
+    {
+        string = malloc(size);
+
+        va_copy(curr, args);
+        n = vsnprintf(string, size, f, curr);
+        va_end(curr);
+
+        if (0 <= n && n < size)
+            break;
+
+        /* result was truncated */
+        if (-1 == n)
+            size = size * 3 / 2 + 1;    /* the length is unknown */
+        else
+            size = n + 1;   /* n bytes + trailing '\0' */
+
+        lxl_free(string);
+
+    }
+
+    lxl_free(dest);
+
+    return string;
+
+}
+
+
+char *lxl_dsprintf(char *dest, const char *f, ...)
+{
+    char    *string;
+    va_list args;
+
+    va_start(args, f);
+
+    string = lxl_dvsprintf(dest, f, args);
+
+    va_end(args);
+
+    return string;
+
+}
+
 
 
 /**
- * @Function  lxl_err 
+ * @Function  lxl_err 		输出错误信息
  *
  * @Param     out
- * 输出错误信息。
+ * 
  */
 void lxl_err(char *out)
 {
@@ -110,122 +159,98 @@ void lxl_err(char *out)
 
 
 
-int	is_utf8(const char *text)
+/**
+ * @Function  is_uint_n_range       检查字符串是否在指定的范围内
+ *
+ * @Param     str                   待检查的字符串
+ * @Param     n                     字符串长度
+ * @Param     value                 要写入的转换值的缓冲区，可以是NULL
+ * @Param     size                  缓冲区的大小
+ * @Param     min                   指定范围的最小值
+ * @Param     max                   指定范围的最大值
+ *
+ * @Returns   
+ */
+int is_uint_n_range(const char *str, size_t n, void *value, size_t size, uint64_t min, uint64_t max)
 {
-	unsigned int	utf32;
-	unsigned char	*utf8;
-	size_t		i, mb_len, expecting_bytes = 0;
+    uint64_t        value_uint64 = 0, c;
+    const uint64_t  max_uint64 = ~(uint64_t)__UINT64_C(0);
 
-	while ('\0' != *text)
-	{
-		/* single ASCII character */
-		if (0 == (*text & 0x80))
-		{
-			text++;
-			continue;
-		}
+    if ('\0' == *str || 0 == n || sizeof(uint64_t) < size || (0 == size && NULL != value))
+        return FAIL;
 
-		/* unexpected continuation byte or invalid UTF-8 bytes '\xfe' & '\xff' */
-		if (0x80 == (*text & 0xc0) || 0xfe == (*text & 0xfe))
-			return FAIL;
+    while ('\0' != *str && 0 < n--)
+    {
+        if (0 == isdigit(*str))
+            return FAIL;    /* not a digit */
 
-		/* multibyte sequence */
+        c = (uint64_t)(unsigned char)(*str - '0');
 
-		utf8 = (unsigned char *)text;
+        if ((max_uint64 - c) / 10 < value_uint64)
+            return FAIL;    /* maximum value exceeded */
 
-		if (0xc0 == (*text & 0xe0))		/* 2-bytes multibyte sequence */
-			expecting_bytes = 1;
-		else if (0xe0 == (*text & 0xf0))	/* 3-bytes multibyte sequence */
-			expecting_bytes = 2;
-		else if (0xf0 == (*text & 0xf8))	/* 4-bytes multibyte sequence */
-			expecting_bytes = 3;
-		else if (0xf8 == (*text & 0xfc))	/* 5-bytes multibyte sequence */
-			expecting_bytes = 4;
-		else if (0xfc == (*text & 0xfe))	/* 6-bytes multibyte sequence */
-			expecting_bytes = 5;
+        value_uint64 = value_uint64 * 10 + c;
 
-		mb_len = expecting_bytes + 1;
-		text++;
+        str++;
 
-		for (; 0 != expecting_bytes; expecting_bytes--)
-		{
-			/* not a continuation byte */
-			if (0x80 != (*text++ & 0xc0))
-				return FAIL;
-		}
+    }
 
-		/* overlong sequence */
-		if (0xc0 == (utf8[0] & 0xfe) ||
-				(0xe0 == utf8[0] && 0x00 == (utf8[1] & 0x20)) ||
-				(0xf0 == utf8[0] && 0x00 == (utf8[1] & 0x30)) ||
-				(0xf8 == utf8[0] && 0x00 == (utf8[1] & 0x38)) ||
-				(0xfc == utf8[0] && 0x00 == (utf8[1] & 0x3c)))
-		{
-			return FAIL;
-		}
+    if (min > value_uint64 || value_uint64 > max)
+        return FAIL;
 
-		utf32 = 0;
+    if (NULL != value)
+    {
+        /* On little endian architecture the output value will be stored starting from the first bytes */
+        /* of 'value' buffer while on big endian architecture it will be stored starting from the last */
+        /* bytes. We handle it by storing the offset in the most significant byte of short value and   */
+        /* then use the first byte as source offset.                                                   */
+        unsigned short  value_offset = (unsigned short)((sizeof(uint64_t) - size) << 8);
 
-		if (0xc0 == (utf8[0] & 0xe0))
-			utf32 = utf8[0] & 0x1f;
-		else if (0xe0 == (utf8[0] & 0xf0))
-			utf32 = utf8[0] & 0x0f;
-		else if (0xf0 == (utf8[0] & 0xf8))
-			utf32 = utf8[0] & 0x07;
-		else if (0xf8 == (utf8[0] & 0xfc))
-			utf32 = utf8[0] & 0x03;
-		else if (0xfc == (utf8[0] & 0xfe))
-			utf32 = utf8[0] & 0x01;
+        memcpy(value, (unsigned char *)&value_uint64 + *((unsigned char *)&value_offset), size);
 
-		for (i = 1; i < mb_len; i++)
-		{
-			utf32 <<= 6;
-			utf32 += utf8[i] & 0x3f;
-		}
+    }
 
+    return SUCCEED;
 
-		if (utf32 > 0x10ffff || 0xd800 == (utf32 & 0xf800))
-			return FAIL;
-	}
-
-	return SUCCEED;
-}
-
-
-void	ltrim(char *str, const char *charlist)
-{
-	char	*p;
-
-	if (NULL == str || '\0' == *str)
-		return;
-
-	for (p = str; '\0' != *p && NULL != strchr(charlist, *p); p++)
-		;
-
-	if (p == str)
-		return;
-
-	while ('\0' != *p)
-		*str++ = *p++;
-
-	*str = '\0';
 }
 
 
 
-int	rtrim(char *str, const char *charlist)
+/**
+ * @Function  suffix2factor 
+ *
+ * @Param     c         KMGTsmhdw转化
+ *
+ * @Returns   
+ */
+uint64_t suffix2factor(char c)
 {
-	char	*p;
-	int	count = 0;
+    switch (c)
+    {
+        case 'K':
+            return LXL_KIBIBYTE;
+        case 'M':
+            return LXL_MEBIBYTE;
+        case 'G':
+            return LXL_GIBIBYTE;
+        case 'T':
+            return LXL_TEBIBYTE;
+        case 's':
+            return 1;
+        case 'm':
+            return SEC_PER_MIN;
+        case 'h':
+            return SEC_PER_HOUR;
+        case 'd':
+            return SEC_PER_DAY;
+        case 'w':
+            return SEC_PER_WEEK;
+        default:
+            return 1;
 
-	if (NULL == str || '\0' == *str)
-		return count;
+    }
 
-	for (p = str + strlen(str) - 1; p >= str && NULL != strchr(charlist, *p); p--)
-	{
-		*p = '\0';
-		count++;
-	}
-
-	return count;
 }
+
+
+

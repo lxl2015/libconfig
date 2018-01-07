@@ -9,160 +9,266 @@
 
 #include "lxl_cfg.h"
 #include "lxl_misc.h"
+#include "lxl_str.h"
+
+
+int __parse_cfg_file(const char *cfg_file, struct cfg_line *cfg, int level, int optional, int strict);
 
 
 
-static int	match_glob(const char *file, const char *pattern)
+
+/**
+ * @Function  parse_glob        解析匹配文件夹下的配置文件
+ *
+ * @Param     glob              在指定的Include包含的匹配
+ * @Param     path              解析路径或文件
+ * @Param     pattern           解析模式，如果path是路径
+ *
+ * @Returns   
+ */
+static int parse_glob(const char *glob, char **path, char **pattern)
 {
-	const char	*f, *g, *p, *q;
+	const char	*p;
 
-	f = file;
-	p = pattern;
-
-	while (1)
+	if (NULL == (p = strchr(glob, '*')))
 	{
-		/* corner case */
+		*path = lxl_strdup2(NULL, glob);
+		*pattern = NULL;
 
-		if ('\0' == *p)
-			return '\0' == *f ? SUCCEED : FAIL;
-
-		/* find a set of literal characters */
-
-		while ('*' == *p)
-			p++;
-
-		for (q = p; '\0' != *q && '*' != *q; q++)
-			;
-
-		/* if literal characters are at the beginning... */
-
-		if (pattern == p)
-		{
-			if (0 != strncmp(f, p, q - p))
-				return FAIL;
-
-			f += q - p;
-			p = q;
-
-			continue;
-		}
-
-		/* if literal characters are at the end... */
-
-		if ('\0' == *q)
-		{
-			for (g = f; '\0' != *g; g++)
-				;
-
-			if (g - f < q - p)
-				return FAIL;
-			return 0 == strcmp(g - (q - p), p) ? SUCCEED : FAIL;
-		}
-
-		/* if literal characters are in the middle... */
-
-		while (1)
-		{
-			if ('\0' == *f)
-				return FAIL;
-			if (0 == strncmp(f, p, q - p))
-			{
-				f += q - p;
-				p = q;
-
-				break;
-			}
-
-			f++;
-		}
+		goto trim;
 	}
+
+	if (NULL != strchr(p + 1, PATH_SEPARATOR))
+	{
+		lxl_err(lxl_strdup("%s: glob pattern should be the last component of the path", glob));
+		return FAIL;
+	}
+
+	do
+	{
+		if (glob == p)
+		{
+			lxl_err(lxl_strdup("%s: path should be absolute", glob));
+			return FAIL;
+		}
+
+		p--;
+	}
+	while (PATH_SEPARATOR != *p);
+
+	*path = lxl_strdup2(NULL, glob);
+	(*path)[p - glob] = '\0';
+
+	*pattern = lxl_strdup2(NULL, p + 1);
+trim:
+	if (0 != rtrim(*path, "/") && NULL == *pattern)
+		*pattern = lxl_strdup2(NULL, "*");			/* make sure path is a directory */
+
+	if ('\0' == (*path)[0] && '/' == glob[0])			/* retain forward slash for "/" */
+	{
+		(*path)[0] = '/';
+		(*path)[1] = '\0';
+	}
+	return SUCCEED;
 }
 
 
 
-static int	parse_cfg_dir(const char *path, const char *pattern, struct cfg_line *cfg, int level, int strict)
+/**
+ * @Function  match_glob    检查是否是一个文件
+ *
+ * @Param     file
+ * @Param     pattern
+ *
+ * @Returns   
+ */
+static int match_glob(const char *file, const char *pattern)
 {
-	DIR		*dir;
-	struct dirent	*d;
-	struct stat	sb;
-	char		*file = NULL;
-	int		ret = FAIL;
+    const char	*f, *g, *p, *q;
 
-	if (NULL == (dir = opendir(path)))
-	{
-		lxl_err(lxl_strdup("%s: %s", path, strerror(errno)));
-		goto out;
-	}
+    f = file;
+    p = pattern;
 
-	while (NULL != (d = readdir(dir)))
-	{
-		file = lxl_dsprintf(file, "%s/%s", path, d->d_name);
+    while (1)
+    {
+        /* corner case */
 
-		if (0 != stat(file, &sb) || 0 == S_ISREG(sb.st_mode))
-			continue;
+        if ('\0' == *p)
+            return '\0' == *f ? SUCCEED : FAIL;
 
-		if (NULL != pattern && SUCCEED != match_glob(d->d_name, pattern))
-			continue;
+        /* find a set of literal characters */
 
-		if (SUCCEED != __parse_cfg_file(file, cfg, level, LXL_CFG_FILE_REQUIRED, strict))
-			goto close;
-	}
+        while ('*' == *p)
+            p++;
 
-	ret = SUCCEED;
+        for (q = p; '\0' != *q && '*' != *q; q++)
+            ;
+
+        /* if literal characters are at the beginning... */
+
+        if (pattern == p)
+        {
+            if (0 != strncmp(f, p, q - p))
+                return FAIL;
+
+            f += q - p;
+            p = q;
+
+            continue;
+        }
+
+        /* if literal characters are at the end... */
+
+        if ('\0' == *q)
+        {
+            for (g = f; '\0' != *g; g++)
+                ;
+
+            if (g - f < q - p)
+                return FAIL;
+            return 0 == strcmp(g - (q - p), p) ? SUCCEED : FAIL;
+        }
+
+        /* if literal characters are in the middle... */
+
+        while (1)
+        {
+            if ('\0' == *f)
+                return FAIL;
+            if (0 == strncmp(f, p, q - p))
+            {
+                f += q - p;
+                p = q;
+
+                break;
+            }
+
+            f++;
+        }
+    }
+}
+
+
+
+
+
+/**
+ * @Function  parse_cfg_dir         检查配置文件夹下所有配置文件
+ *
+ * @Param     path                  配置文件夹路径
+ * @Param     pattern               解析模式
+ * @Param     cfg                   指向配置参数的结构体
+ * @Param     level                 包含配置文件层数
+ * @Param     strict                将未知参数视为错误
+ *
+ * @Returns   
+ */
+static int parse_cfg_dir(const char *path, const char *pattern, struct cfg_line *cfg, int level, int strict)
+{
+    DIR		*dir;
+    struct dirent	*d;
+    struct stat	sb;
+    char		*file = NULL;
+    int		ret = FAIL;
+
+    if (NULL == (dir = opendir(path)))
+    {
+        lxl_err(lxl_strdup("%s: %s", path, strerror(errno)));
+        goto out;
+    }
+
+    while (NULL != (d = readdir(dir)))
+    {
+        file = lxl_dsprintf(file, "%s/%s", path, d->d_name);
+
+        if (0 != stat(file, &sb) || 0 == S_ISREG(sb.st_mode))
+            continue;
+
+        if (NULL != pattern && SUCCEED != match_glob(d->d_name, pattern))
+            continue;
+
+        if (SUCCEED != __parse_cfg_file(file, cfg, level, LXL_CFG_FILE_REQUIRED, strict))
+            goto close;
+    }
+
+    ret = SUCCEED;
 close:
-	if (0 != closedir(dir))
-	{
-		lxl_err(lxl_strdup("%s: %s", path, strerror(errno)));
-		ret = FAIL;
-	}
+    if (0 != closedir(dir))
+    {
+        lxl_err(lxl_strdup("%s: %s", path, strerror(errno)));
+        ret = FAIL;
+    }
 
-	lxl_free(file);
+    lxl_free(file);
 out:
-	return ret;
+    return ret;
 }
 
 
 
-static int	parse_cfg_object(const char *cfg_file, struct cfg_line *cfg, int level, int strict)
+
+
+/**
+ * @Function  parse_cfg_object      解析 "Include=..." 的配置文件
+ *
+ * @Param     cfg_file              配置文件的名称包含路径
+ * @Param     cfg                   指向配置参数的结构体
+ * @Param     level                 包含配置文件层数
+ * @Param     strict                将未知参数视为错误
+ *
+ * @Returns   
+ */
+static int parse_cfg_object(const char *cfg_file, struct cfg_line *cfg, int level, int strict)
 {
-	int		ret = FAIL;
-	char		*path = NULL, *pattern = NULL;
-	struct stat	sb;
+    int		ret = FAIL;
+    char		*path = NULL, *pattern = NULL;
+    struct stat	sb;
 
-	if (SUCCEED != parse_glob(cfg_file, &path, &pattern))
-		goto clean;
+    if (SUCCEED != parse_glob(cfg_file, &path, &pattern))
+        goto clean;
 
-	if (0 != stat(path, &sb))
-	{
-		lxl_err(lxl_strdup("%s: %s", path, strerror(errno)));
-		goto clean;
-	}
+    if (0 != stat(path, &sb))
+    {
+        lxl_err(lxl_strdup("%s: %s", path, strerror(errno)));
+        goto clean;
+    }
 
-	if (0 == S_ISDIR(sb.st_mode))
-	{
-		if (NULL == pattern)
-		{
-			ret = __parse_cfg_file(path, cfg, level, LXL_CFG_FILE_REQUIRED, strict);
-			goto clean;
-		}
+    if (0 == S_ISDIR(sb.st_mode))
+    {
+        if (NULL == pattern)
+        {
+            ret = __parse_cfg_file(path, cfg, level, LXL_CFG_FILE_REQUIRED, strict);
+            goto clean;
+        }
 
-		lxl_err(lxl_strdup("%s: base path is not a directory", cfg_file));
-		goto clean;
-	}
+        lxl_err(lxl_strdup("%s: base path is not a directory", cfg_file));
+        goto clean;
+    }
 
-	ret = parse_cfg_dir(path, pattern, cfg, level, strict);
+    ret = parse_cfg_dir(path, pattern, cfg, level, strict);
 clean:
-	lxl_free(pattern);
-	lxl_free(path);
+    lxl_free(pattern);
+    lxl_free(path);
 
-	return ret;
+    return ret;
 }
 
 
-static int __parse_cfg_file(const char *cfg_file, struct cfg_line *cfg, int level, int optional, int strict)
+/**
+ * @Function  __parse_cfg_file      解析配置文件
+ *
+ * @Param     cfg_file              配置文件的名称包含路径
+ * @Param     cfg                   指向配置参数的结构体
+ * @Param     level                 包含配置文件层数
+ * @Param     optional              不要将缺少的配置文件视为错误
+ * @Param     strict                将未知参数视为错误
+ *
+ * @Returns   
+ */
+int __parse_cfg_file(const char *cfg_file, struct cfg_line *cfg, int level, int optional, int strict)
 {
     FILE    *file = NULL;
-    int lineno,param_valid, index;
+    int lineno,param_valid, i;
     char line[MAX_STRING_LEN + 3], *parameter, *value;
     uint64_t    var;
     size_t  len;
@@ -204,7 +310,7 @@ static int __parse_cfg_file(const char *cfg_file, struct cfg_line *cfg, int leve
             /*
              * 检查是否是utf-8字符集，仅支持utf-8
              * */
-            if (SUCCEED == is_utf8(line))
+            if (SUCCEED != is_utf8(line))
             {
                 /* code */
                 goto no_utf8;
@@ -263,7 +369,7 @@ static int __parse_cfg_file(const char *cfg_file, struct cfg_line *cfg, int leve
                         *((char **)cfg[i].variable) = lxl_strdup2(*((char **)cfg[i].variable), value); 
                         break;
                     case TYPE_MULTISTRING:
-                        lxl_strarr_add(cfg[i].variable, value);
+                        strarr_add(cfg[i].variable, value);
                         break;
                     case TYPE_UINT64:
                         if(FAIL == str2uint64(value , "KMGT", &var))
@@ -281,7 +387,7 @@ static int __parse_cfg_file(const char *cfg_file, struct cfg_line *cfg, int leve
                 goto unknown_parameter;
         }
 
-        flcose(file);
+        fclose(file);
     }
     if(1 != level)
         return SUCCEED;
@@ -363,7 +469,7 @@ error:
  * @Param     cfg_file  配置文件的路径
  * @Param     cfg       配置文件的参数列表
  * @Param     optional  定义是否是配置文件中是否包含其他配置文件
- * @Param     strict    
+ * @Param     strict    将未知参数视为错误
  *
  * @Returns   
  */

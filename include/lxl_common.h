@@ -6,15 +6,19 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdint.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <assert.h>
 
 
 
 #ifndef SUCCEED
-#define SUCCEED     0
+    #define SUCCEED     0
 #endif
 
 #ifndef  FAIL
-#define FAIL        -1
+    #define FAIL        -1
 #endif
 
 
@@ -24,11 +28,19 @@
 
 
 #ifndef YES
-#define YES 1
+    #define YES 1
 #endif
 
 #ifndef NO
-#define NO 0
+    #define NO 0
+#endif
+
+#ifndef __UINT64_C
+    #ifdef UINT64_C
+        #define __UINT64_C(c)	(UINT64_C(c))
+    #else
+        #define __UINT64_C(c)	(c ## ULL)
+    #endif
 #endif
 
 
@@ -46,5 +58,35 @@ do                          \
 
 
 
+
+
+
+
+
+
+/* config file parsing options */
+#define LXL_CFG_FILE_REQUIRED   0
+#define LXL_CFG_FILE_OPTIONAL   1
+
+#define LXL_CFG_NOT_STRICT  0
+#define LXL_CFG_STRICT      1
+
+
+
+#define LXL_KIBIBYTE        1024
+#define LXL_MEBIBYTE        1048576
+#define LXL_GIBIBYTE        1073741824
+#define LXL_TEBIBYTE        __UINT64_C(1099511627776)
+
+#define SEC_PER_MIN         60
+#define SEC_PER_HOUR        3600
+#define SEC_PER_DAY         86400
+#define SEC_PER_WEEK        (7 * SEC_PER_DAY)
+#define SEC_PER_MONTH       (30 * SEC_PER_DAY)
+#define SEC_PER_YEAR        (365 * SEC_PER_DAY)
+
+#	ifndef PATH_SEPARATOR
+#		define PATH_SEPARATOR	'/'
+#	endif
 
 #endif
